@@ -17,6 +17,8 @@ app.use(cors());
 app.use("/auth", controllers.authController);
 app.use("/user", controllers.profileController);
 app.use("/posts", controllers.postController);
+app.use("/reacts", controllers.reactController);
+app.use("/comments", controllers.commentController);
 
 app.use((err: HttpException | Error, req: Request, res: Response, next: NextFunction) => {
   const message = err?.message || "something went wrong";

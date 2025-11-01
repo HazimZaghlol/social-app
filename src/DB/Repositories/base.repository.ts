@@ -1,7 +1,8 @@
 import mongoose, { FilterQuery, Model, ProjectionType, QueryOptions } from "mongoose";
+import { UpdateQuery } from "mongoose";
 
 export abstract class BaseRepository<T> {
-  constructor(private model: Model<T>) {}
+  constructor(protected model: Model<T>) {}
 
   async createNewDocument(document: Partial<T>): Promise<T> {
     return await this.model.create(document);
@@ -19,7 +20,7 @@ export abstract class BaseRepository<T> {
     return await this.model.find({ _id: { $in: ids } }, projection, options);
   }
 
-  async updateOneDocument(filters: FilterQuery<T>, update: Partial<T>, options: QueryOptions<T> = { new: true }): Promise<T | null> {
+  async updateOneDocument(filters: FilterQuery<T>, update: UpdateQuery<T>, options: QueryOptions<T> = { new: true }): Promise<T | null> {
     return await this.model.findOneAndUpdate(filters, update, options);
   }
 

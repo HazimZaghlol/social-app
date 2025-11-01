@@ -6,3 +6,4 @@ export * from "./Interfaces/conversation.interface";
 export * from "./Interfaces/messages.interface";
 export * from "./Interfaces/post.interface";
 export * from "./Interfaces/comments.interface";
+export * from "./Interfaces/react.interface";

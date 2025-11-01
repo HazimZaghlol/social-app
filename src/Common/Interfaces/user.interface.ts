@@ -27,6 +27,7 @@ export interface IUser extends Document<Types.ObjectId> {
     }
   ];
   isConfirmed: boolean;
+  isTwoFactorEnabled: boolean;
 }
 
 export interface IEmail {

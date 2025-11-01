@@ -17,6 +17,12 @@ const postSchema = new mongoose.Schema<IPost>({
       ref: "User",
     },
   ],
+  isFrozen: { type: Boolean, default: false },
+  frozenAt: { type: Date },
+  frozenBy: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "User",
+  },
 });
 
 postSchema.plugin(mongoosePaginate);

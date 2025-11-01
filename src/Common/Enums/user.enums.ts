@@ -20,6 +20,8 @@ enum OTPTypeEnum {
   FORGOT_PASSWORD_OTP = "forgot-password-otp",
   CHANGE_EMAIL_OTP = "change-email-otp",
   CONFIRM_EMAIL_OTP = "confirm-email-otp",
+  ENABLE_2FA_OTP = "enable-2fa-otp",
+  LOGIN_2FA_OTP = "login-2fa-otp",
 }
 
 enum FriedShipStatusEnum {

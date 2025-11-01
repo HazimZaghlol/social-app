@@ -36,6 +36,10 @@ const userSchema = new mongoose.Schema<IUser>(
       type: Boolean,
       default: false,
     },
+    isTwoFactorEnabled: {
+      type: Boolean,
+      default: false,
+    },
   },
   {
     timestamps: true,
@@ -76,7 +80,6 @@ userSchema.pre("save", async function (next) {
 
 userSchema.pre(["findOneAndUpdate", "updateOne"], async function (next) {
   const update = this.getUpdate() as Partial<IUser>;
-
 
   if (update.password) {
     update.password = await generateHash(update.password);

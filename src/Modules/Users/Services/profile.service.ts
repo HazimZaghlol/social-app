@@ -1,14 +1,15 @@
 import { NextFunction, Request, Response } from "express";
-import { ConversationType, FriedShipStatusEnum, IRequest, IUser } from "../../../Common";
+import { ConversationType, FriedShipStatusEnum, IRequest, IUser, OTPTypeEnum } from "../../../Common";
 import { UserRepository } from "../../../DB/Repositories/user.repository";
 import { UserModel } from "../../../DB/Models";
-import { BadRequestException, NotFoundException } from "../../../Utils/Errors/exceptions.utils";
+import { BadRequestException, NotFoundException, UnauthorizedException } from "../../../Utils/Errors/exceptions.utils";
 import { HttpException } from "../../../Utils/Errors/http-exception.utils";
 import mongoose from "mongoose";
-import { SuccessResponse } from "../../../Utils/Response/response-helper.utils";
+import { FailedResponse, SuccessResponse } from "../../../Utils/Response/response-helper.utils";
 import { FriendShipRepository } from "../../../DB/Repositories/friendShip.repository";
 import { ConversationRepository } from "../../../DB/Repositories";
-import { S3ClientService } from "../../../Utils";
+import { compareHash, S3ClientService, generateHash, sendEmailEvent } from "../../../Utils";
+import { generateOTP } from "../../../Utils/OTP";
 
 class ProfileService {
   private userRepo: UserRepository = new UserRepository(UserModel);
@@ -46,9 +47,8 @@ class ProfileService {
   deleteAccount = async (req: Request, res: Response, next: NextFunction) => {
     const user = (req as IRequest).loggedInUser.user;
     const deletedDocument = await this.userRepo.deleteDocumentById(user._id);
-    
-    const deletedResponse = await this.s3Client.DeleteFileFromS3(deletedDocument?.profilePic || "");
 
+    const deletedResponse = await this.s3Client.DeleteFileFromS3(deletedDocument?.profilePic || "");
 
     return res.json(SuccessResponse("Account deleted successfully", deletedResponse));
   };
@@ -56,7 +56,7 @@ class ProfileService {
   // *************************************** Update Profile ***************************************
   updateProfile = async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const { firstname, lastname, password, gender, DOB, phoneNumber, age }: Partial<IUser> = req.body;
+      const { firstname, lastname, gender, DOB, phoneNumber, age }: Partial<IUser> = req.body;
       const userId = (req as IRequest).loggedInUser.user._id;
 
       const existingUser = await this.userRepo.findDocumentById(userId);
@@ -67,7 +67,6 @@ class ProfileService {
       const updateData: Partial<IUser> = {};
       if (firstname) updateData.firstname = firstname;
       if (lastname) updateData.lastname = lastname;
-      if (password) updateData.password = password;
       if (gender) updateData.gender = gender;
       if (DOB) updateData.DOB = new Date(DOB);
       if (phoneNumber) updateData.phoneNumber = phoneNumber;
@@ -96,6 +95,96 @@ class ProfileService {
       } else {
         next(new HttpException("Error updating profile", 500));
       }
+    }
+  };
+
+  // *************************************** Update password ***************************************
+  updatePassword = async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const userId = (req as IRequest).loggedInUser.user._id;
+      const { currentPassword, newPassword } = req.body;
+
+      if (!currentPassword || !newPassword) {
+        throw new BadRequestException("Current password and new password are required");
+      }
+
+      const user = await this.userRepo.findDocumentById(userId);
+      if (!user) {
+        throw new NotFoundException("User not found");
+      }
+
+      // Verify current password
+      const isPasswordValid = await compareHash(currentPassword, user.password);
+      if (!isPasswordValid) {
+        throw new BadRequestException("Current password is incorrect");
+      }
+
+      // Update password
+      const updatedUser = await this.userRepo.updateOneDocument({ _id: userId }, { password: newPassword }, { new: true });
+
+      return res.json(SuccessResponse("Password updated successfully"));
+    } catch (error: any) {
+      if (error instanceof HttpException) {
+        return res.json(FailedResponse(error.message, error.statusCode));
+      } else {
+        next(error);
+      }
+    }
+  };
+  // *************************************** Update Email ***************************************
+  updateEmail = async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const userId = (req as IRequest).loggedInUser.user._id;
+      const { newEmail } = req.body;
+
+      if (!newEmail) {
+        throw new BadRequestException("New email is required");
+      }
+      const emailExists = await this.userRepo.findOneDocument({ email: newEmail });
+      if (emailExists) {
+        throw new BadRequestException("Email already exists");
+      }
+
+      const otpPlain = generateOTP();
+      const signedOTP = {
+        value: await generateHash(otpPlain),
+        expiresAt: new Date(Date.now() + 10 * 60 * 1000),
+        otpType: OTPTypeEnum.CHANGE_EMAIL_OTP,
+      };
+
+      const updatedUser = await this.userRepo.updateOneDocument(
+        { _id: userId },
+        {
+          email: newEmail,
+          isConfirmed: false,
+          OTPs: [signedOTP],
+        },
+        { new: true }
+      );
+
+      if (!updatedUser) {
+        throw new NotFoundException("User not found");
+      }
+
+      const emailData = {
+        to: newEmail,
+        subject: "Email Change Confirmation",
+        html: `
+          <h2>Hi ${updatedUser.firstname} 👋</h2>
+          <p>We received a request to change your email address. Please use the following OTP to confirm your new email address:</p>
+          <h3>OTP: ${otpPlain}</h3>
+          <p>This OTP will expire in 10 minutes.</p>
+          <p>If you didn't request this change, please ignore this email or contact support.</p>
+          <br/>
+          <p>Best regards,<br/>The Team</p>
+        `,
+        type: "change-email-otp",
+      };
+      sendEmailEvent(emailData);
+
+      return res.json(SuccessResponse("Email update initiated. Please check your new email for OTP verification.", { email: newEmail }));
+    } catch (error: any) {
+      next(error);
     }
   };
 
@@ -260,6 +349,157 @@ class ProfileService {
         next(error);
       } else {
         next(new HttpException("Error creating friend group", 500));
+      }
+    }
+  };
+
+  // *************************************** Unfriend User ***************************************
+  unfriendUser = async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { friendId } = req.params;
+      const userId = (req as IRequest).loggedInUser.user._id;
+
+      const friendship = await this.friendShipRepo.findOneDocument({
+        status: FriedShipStatusEnum.ACCEPTED,
+        $or: [
+          { requestFormId: userId, requestToId: friendId },
+          { requestFormId: friendId, requestToId: userId },
+        ],
+      });
+
+      if (!friendship) {
+        throw new NotFoundException("Friendship not found");
+      }
+
+      await this.friendShipRepo.deleteDocumentById(friendship._id);
+
+      return res.json(SuccessResponse("Successfully unfriended user"));
+    } catch (error) {
+      if (error instanceof HttpException) {
+        next(error);
+      } else {
+        next(new HttpException("Error unfriending user", 500));
+      }
+    }
+  };
+
+  // *************************************** Delete Friend Request ***************************************
+  deleteFriendRequest = async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { requestId } = req.params;
+      const userId = (req as IRequest).loggedInUser.user._id;
+
+      if (!mongoose.Types.ObjectId.isValid(requestId)) {
+        throw new BadRequestException("Invalid request ID format");
+      }
+
+      const friendRequest = await this.friendShipRepo.findDocumentById(new mongoose.Types.ObjectId(requestId));
+
+      if (!friendRequest) {
+        throw new NotFoundException("Friend request not found");
+      }
+
+      if (friendRequest.requestFormId.toString() !== userId.toString() && friendRequest.requestToId.toString() !== userId.toString()) {
+        throw new UnauthorizedException("You don't have permission to delete this request");
+      }
+
+      if (friendRequest.status !== FriedShipStatusEnum.PENDING) {
+        throw new BadRequestException("Can only delete pending friend requests");
+      }
+
+      await this.friendShipRepo.deleteDocumentById(friendRequest._id);
+
+      return res.json(SuccessResponse("Friend request deleted successfully"));
+    } catch (error) {
+      if (error instanceof HttpException) {
+        next(error);
+      } else {
+        next(new HttpException("Error deleting friend request", 500));
+      }
+    }
+  };
+
+  // *************************************** Block User ***************************************
+  blockUser = async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { userId: userToBlockId } = req.params;
+      const userId = (req as IRequest).loggedInUser.user._id;
+
+      if (!mongoose.Types.ObjectId.isValid(userToBlockId)) {
+        throw new BadRequestException("Invalid user ID format");
+      }
+
+      // Check if trying to block self
+      if (userId.toString() === userToBlockId) {
+        throw new BadRequestException("You cannot block yourself");
+      }
+
+      const userToBlock = await this.userRepo.findDocumentById(new mongoose.Types.ObjectId(userToBlockId));
+      if (!userToBlock) {
+        throw new NotFoundException("User not found");
+      }
+
+      const existingBlock = await this.friendShipRepo.findOneDocument({
+        requestFormId: userId,
+        requestToId: userToBlockId,
+        status: FriedShipStatusEnum.BLOCKED,
+      });
+
+      if (existingBlock) {
+        throw new BadRequestException("User is already blocked");
+      }
+
+      await this.friendShipRepo.deleteManyDocuments({
+        $or: [
+          { requestFormId: userId, requestToId: userToBlockId },
+          { requestFormId: userToBlockId, requestToId: userId },
+        ],
+      });
+
+      await this.friendShipRepo.createNewDocument({
+        requestFormId: userId,
+        requestToId: new mongoose.Types.ObjectId(userToBlockId),
+        status: FriedShipStatusEnum.BLOCKED,
+      });
+
+      return res.json(SuccessResponse("User blocked successfully"));
+    } catch (error) {
+      if (error instanceof HttpException) {
+        next(error);
+      } else {
+        next(new HttpException("Error blocking user", 500));
+      }
+    }
+  };
+
+  // *************************************** Unblock User ***************************************
+  unblockUser = async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { userId: userToUnblockId } = req.params;
+      const userId = (req as IRequest).loggedInUser.user._id;
+
+      if (!mongoose.Types.ObjectId.isValid(userToUnblockId)) {
+        throw new BadRequestException("Invalid user ID format");
+      }
+
+      const blockRecord = await this.friendShipRepo.findOneDocument({
+        requestFormId: userId,
+        requestToId: userToUnblockId,
+        status: FriedShipStatusEnum.BLOCKED,
+      });
+
+      if (!blockRecord) {
+        throw new NotFoundException("Block record not found");
+      }
+
+      await this.friendShipRepo.deleteDocumentById(blockRecord._id);
+
+      return res.json(SuccessResponse("User unblocked successfully"));
+    } catch (error) {
+      if (error instanceof HttpException) {
+        next(error);
+      } else {
+        next(new HttpException("Error unblocking user", 500));
       }
     }
   };
