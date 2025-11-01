@@ -1,25 +1,27 @@
 import { NextFunction, Request, Response } from "express";
-import { IUser, OTPTypeEnum } from "../../../Common";
+import { IRequest, IUser, OTPTypeEnum, SignUpBodyType } from "../../../Common";
 import { UserRepository } from "../../../DB/Repositories/user.repository";
-import { UserModel } from "../../../DB/Models";
-import { compareHash, encryptPhone, generateHash, sendEmailEvent } from "../../../Utils";
+import { blackListedTokenModel, UserModel } from "../../../DB/Models";
+import { compareHash, ConflictException, encryptPhone, generateHash, generateToken, sendEmailEvent } from "../../../Utils";
 import { generateOTP } from "../../../Utils/OTP";
+import crypto from "crypto";
+import { SignOptions } from "jsonwebtoken";
+import { BlackListedRepository } from "../../../DB/Repositories/black-listed.repository";
+import { FailedResponse, SuccessResponse } from "../../../Utils/Response/response-helper.utils";
 
 class AuthService {
   private userRepo: UserRepository = new UserRepository(UserModel);
+  private blackListedRepo: BlackListedRepository = new BlackListedRepository(blackListedTokenModel);
 
   // *************************************** SignUp ***************************************
   signUp = async (req: Request, res: Response, next: NextFunction) => {
-    const { firstname, lastname, email, password, gender, DOB, phoneNumber }: Partial<IUser> = req.body;
+    const { firstname, lastname, email, password, gender, DOB, phoneNumber }: SignUpBodyType = req.body;
 
     const isEmailExist = await this.userRepo.findOneDocument({ email }, "email");
     if (isEmailExist) {
-      return res.status(409).json({ message: "Email already exists" });
+      throw next(new ConflictException("Email already in use", { existingEmail: email }));
     }
 
-    const encryptPhoneNumber = encryptPhone(phoneNumber! as string);
-
-    const hashedPassword = await generateHash(password!);
     const otpPlain = generateOTP();
     const signedOTP = {
       value: await generateHash(otpPlain),
@@ -31,10 +33,10 @@ class AuthService {
       firstname,
       lastname,
       email,
-      password: hashedPassword,
+      password,
       gender,
       DOB,
-      phoneNumber: encryptPhoneNumber,
+      phoneNumber,
       OTPs: [signedOTP],
     });
 
@@ -65,15 +67,39 @@ class AuthService {
   // *************************************** SignIn ***************************************
   signIn = async (req: Request, res: Response, next: NextFunction) => {
     const { email, password }: Partial<IUser> = req.body;
+
+    if (!email || !password) {
+      return res.status(400).json({ message: "Email and password are required" });
+    }
+
     const user = await this.userRepo.findOneDocument({ email }, "+password");
     if (!user) {
-      return res.status(404).json({ message: "User not found" });
+      throw next(new ConflictException("User not found", { invalidEmail: email }));
     }
+
+    if (!user.isConfirmed) {
+      return res.status(403).json({
+        message: "Please confirm your email before signing in",
+      });
+    }
+
     const isPasswordValid = await compareHash(password!, user.password!);
     if (!isPasswordValid) {
-      return res.status(401).json({ message: "Invalid password" });
+      return res.status(401).json({ message: "Invalid credentials" });
     }
-    return res.status(200).json({ message: "User signed in successfully" });
+
+    const jti = crypto.randomUUID();
+    const access_token = generateToken({ _id: user._id, role: user.role, firstname: user.firstname, lastname: user.lastname }, process.env.JWT_SECERT_KEY, {
+      expiresIn: (process.env.JWT_ACCESS_EXPIRATION as SignOptions["expiresIn"]) || "1d",
+      jwtid: jti,
+    });
+
+    const refreshToken = generateToken({ _id: user._id, role: user.role, firstname: user.firstname, lastname: user.lastname }, process.env.JWT_REFRESH_SECRET, {
+      expiresIn: (process.env.JWT_REFRESH_EXPIRATION as SignOptions["expiresIn"]) || "7d",
+      jwtid: jti,
+    });
+
+    return res.status(200).json(SuccessResponse("Signed in successfully", { access_token, refreshToken, user }));
   };
 
   // *************************************** Confirm Email ***************************************
@@ -92,7 +118,7 @@ class AuthService {
       return res.status(400).json({ message: "No OTP found. Please request a new one." });
     }
     if (validOTP.expiresAt! < new Date()) {
-      return res.status(400).json({ message: "OTP has expired. Please request a new one." });
+      return res.status(400).json(FailedResponse("OTP has expired. Please request a new one."));
     }
     const isOTPValid = await compareHash(otp, validOTP.value);
     if (!isOTPValid) {
@@ -102,5 +128,18 @@ class AuthService {
 
     return res.status(200).json({ message: "Email confirmed successfully" });
   };
+
+  // *************************************** logout ***************************************
+  Logout = async (req: Request, res: Response, next: NextFunction) => {
+    const {
+      token: { jti, exp },
+    } = (req as unknown as IRequest).loggedInUser;
+    const blackListedToken = await this.blackListedRepo.createNewDocument({
+      tokenId: jti,
+      expiresAt: new Date(exp! * 1000),
+    });
+    return res.status(200).json(SuccessResponse("Logged out successfully", { blackListedToken }));
+  };
 }
+
 export default new AuthService();

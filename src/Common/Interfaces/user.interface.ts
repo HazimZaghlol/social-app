@@ -1,7 +1,9 @@
-import { Document } from "mongoose";
-import { GenderEnum, OTPTypeEnum, ProviderEnum, RoleEnum } from "../Enums/user.enums";
+import { Document, Types } from "mongoose";
+import { FriedShipStatusEnum, GenderEnum, OTPTypeEnum, ProviderEnum, RoleEnum } from "../Enums/user.enums";
+import { Request } from "express";
+import { JwtPayload } from "jsonwebtoken";
 
-export interface IUser extends Document {
+export interface IUser extends Document<Types.ObjectId> {
   firstname: string;
   lastname: string;
   fullName?: string;
@@ -34,4 +36,19 @@ export interface IEmail {
   content?: string;
   attachments?: [];
   html: string;
+}
+
+export interface IRequest extends Request {
+  loggedInUser: { user: IUser; token: JwtPayload };
+}
+
+export interface IBlackListedToken extends Document<Types.ObjectId> {
+  tokenId: string;
+  expiresAt: Date;
+}
+
+export interface IFriendShip extends Document<Types.ObjectId> {
+  requestFormId: Types.ObjectId;
+  requestToId: Types.ObjectId;
+  status: FriedShipStatusEnum;
 }

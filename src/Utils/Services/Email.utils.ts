@@ -8,7 +8,7 @@ emailEmitter.on("sendEmail", async ({ to, subject, html }: IEmail) => {
   try {
     const transporter = createTransport({
       host: process.env.EMAIL_HOST,
-      port: 465,
+      port: Number(process.env.EMAIL_PORT),
       secure: true,
       auth: {
         user: process.env.EMAIL_USER,

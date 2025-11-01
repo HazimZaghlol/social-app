@@ -1,5 +1,6 @@
 import mongoose from "mongoose";
 import { GenderEnum, IUser, OTPTypeEnum, ProviderEnum, RoleEnum } from "../../Common";
+import { encryptPhone, generateHash } from "../../Utils";
 
 const userSchema = new mongoose.Schema<IUser>(
   {
@@ -62,5 +63,30 @@ const userSchema = new mongoose.Schema<IUser>(
     },
   }
 );
+
+userSchema.pre("save", async function (next) {
+  if (this.isModified("password")) {
+    this.password = await generateHash(this.password as string);
+  }
+  if (this.isModified("phoneNumber")) {
+    this.phoneNumber = encryptPhone(this.phoneNumber! as string);
+  }
+  next();
+});
+
+userSchema.pre(["findOneAndUpdate", "updateOne"], async function (next) {
+  const update = this.getUpdate() as Partial<IUser>;
+
+
+  if (update.password) {
+    update.password = await generateHash(update.password);
+  }
+
+  if (update.phoneNumber) {
+    update.phoneNumber = encryptPhone(update.phoneNumber);
+  }
+
+  next();
+});
 
 export const UserModel = mongoose.model("User", userSchema);

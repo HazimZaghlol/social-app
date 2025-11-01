@@ -21,4 +21,12 @@ enum OTPTypeEnum {
   CHANGE_EMAIL_OTP = "change-email-otp",
   CONFIRM_EMAIL_OTP = "confirm-email-otp",
 }
-export { RoleEnum, GenderEnum, ProviderEnum, OTPTypeEnum };
+
+enum FriedShipStatusEnum {
+  PENDING = "pending",
+  ACCEPTED = "accepted",
+  REJECTED = "rejected",
+  BLOCKED = "blocked",
+}
+
+export { RoleEnum, GenderEnum, ProviderEnum, OTPTypeEnum, FriedShipStatusEnum };
